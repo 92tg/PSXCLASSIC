@@ -1726,14 +1726,17 @@ local function sendPetWebhook(name, p)
         username = "VY HUB Notifier",
         embeds = { {
             title = title,
-            description = string.format("**%s** just got a **%s**!", LocalPlayer.Name, name),
+            description = string.format("**%s** just hatched a **%s** with VY HUB!", LocalPlayer.Name, name),
+            author = { name = "VY HUB" },
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
             color = color,
             fields = {
                 { name = "Pet", value = name, inline = true },
                 { name = "Game", value = "Pet Simulator X Classic", inline = true },
+                { name = "Hatched At", value = os.date("%H:%M:%S") .. " (local time)", inline = true },
                 { name = "World", value = tostring(currentWorld()), inline = true },
             },
-            footer = { text = "VY HUB | " .. os.date("%Y-%m-%d %H:%M:%S") },
+            footer = { text = "VY HUB Notifier | " .. os.date("%Y-%m-%d %H:%M:%S") },
         } },
     }
     local icon = petIconUrl(thumb)
