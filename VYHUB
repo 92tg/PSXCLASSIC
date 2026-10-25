@@ -1358,6 +1358,90 @@ local function areaTick()
     end
     goBack(origin, F.areaReturn)
 end
+F.autoBestArea = false
+V.bestAreaLast = nil
+V.bestAreaAt = 0
+local function areaScore(area)
+    local mult = tonumber(area.mult) or 0
+    local gate = type(area.gate) == "table" and tonumber(area.gate.cost) or 0
+    return mult * 1e12 + gate
+end
+local function areaLanding(folder, name)
+    local map = worldMap()
+    local pads = map and map:FindFirstChild("Teleports")
+    local pad = pads and pads:FindFirstChild(name)
+    if pad and pad:IsA("BasePart") then return pad.CFrame, pad end
+    local ground
+    for _, d in ipairs(folder:GetDescendants()) do
+        if d:IsA("BasePart") and d.CanCollide and (not ground or d.Size.X * d.Size.Z > ground.Size.X * ground.Size.Z) then ground = d end
+    end
+    if ground then return CFrame.new(ground.Position + Vector3.new(0, ground.Size.Y / 2, 0)), ground end
+    local ok, cf = pcall(function() return CFrame.new(folder:GetPivot().Position) end)
+    return ok and cf or nil, nil
+end
+local function scanAreas()
+    local map = worldMap()
+    local folder = map and map:FindFirstChild("Areas")
+    if not folder then return {} end
+    local list = {}
+    for _, child in ipairs(folder:GetChildren()) do
+        local name = child.Name
+        local area = G.Directory and G.Directory.Areas and G.Directory.Areas[name]
+        if type(area) == "table" and not area.isShop and not area.hidden then
+            local unlocked = hasArea(name) and areaOpen(name)
+            list[#list + 1] = { name = name, folder = child, area = area, unlocked = unlocked, score = areaScore(area), mult = area.mult }
+        end
+    end
+    table.sort(list, function(a, b) return a.score > b.score end)
+    return list
+end
+local function bestArea()
+    for _, entry in ipairs(scanAreas()) do
+        if entry.unlocked then
+            local cf, part = areaLanding(entry.folder, entry.name)
+            if cf then
+                entry.cframe, entry.part = cf, part
+                return entry
+            end
+        end
+    end
+    return nil
+end
+local function teleportToArea(target)
+    local c = LocalPlayer.Character
+    local r = hrp()
+    local hum = c and c:FindFirstChildOfClass("Humanoid")
+    if not (c and r and hum and target and target.cframe) then return false end
+    if not canDoAction() then return false end
+    teleportTo(target.cframe + target.cframe.UpVector * (hum.HipHeight + r.Size.Y / 2))
+    if target.part and target.part.Parent and target.part.Parent.Name == "Teleports" and isfn(G.WorldCmds, "HasTeleport") and gval(G.WorldCmds.HasTeleport, target.name) == true then
+        netFire("Performed Teleport", target.name)
+    end
+    if V.farmTarget then
+        releasePets(V.farmPets, V.farmTarget:GetAttribute("ID") or V.farmTarget.Name)
+        V.farmTarget = nil
+    end
+    return true
+end
+local function bestAreaTick()
+    if not F.autoBestArea then
+        V.bestAreaLast = nil
+        return
+    end
+    local best = bestArea()
+    if not best then
+        state.areaNote = "best area: none unlocked in this world"
+        return
+    end
+    if best.name == V.bestAreaLast then return end
+    if os.clock() - V.bestAreaAt < 5 then return end
+    if teleportToArea(best) then
+        V.bestAreaLast = best.name
+        V.bestAreaAt = os.clock()
+        state.areaNote = "teleported to best area " .. best.name
+        notify("PSX Classic", "Teleported to " .. best.name, 4)
+    end
+end
 local function nextTeleport()
     if ownsPass("Teleport") then return nil, "Teleport gamepass owned" end
     if not isfn(G.WorldCmds, "HasTeleport") then return nil, "HasTeleport unavailable" end
@@ -1716,6 +1800,7 @@ loop("boosts", 5, boostTick)
 loop("rank", 15, rankTick)
 loop("vip", 30, vipTick)
 loop("return", 10, returnTick)
+loop("bestArea", 3, bestAreaTick)
 loop("webhook", 2, webhookTick)
 
 if type(Library.ExecutorSettings) ~= "table" or type(Library.ExecutorSettings.MenuKeybind) ~= "string" or Library.ExecutorSettings.MenuKeybind == "" then
@@ -1838,6 +1923,14 @@ UI.AreaSec:AddToggle({ Name = "Auto Unlock Next Area", Default = false, Flag = "
 UI.AreaSec:AddToggle({ Name = "Teleport To The Gate When Buying", Default = true, Flag = "px_areaTeleport", Callback = function(v) F.areaTeleport = v end })
 UI.AreaSec:AddToggle({ Name = "Return After Buying", Default = true, Flag = "px_areaReturn", Callback = function(v) F.areaReturn = v end })
 UI.AreaSec:AddToggle({ Name = "Auto Buy Area Teleports", Default = false, Flag = "px_autoTeleports", Callback = function(v) F.autoTeleports = v end })
+UI.AreaSec:AddToggle({ Name = "Auto Teleport To Best Area", Default = false, Flag = "px_autoBestArea", Callback = function(v) F.autoBestArea = v V.bestAreaLast = nil end })
+UI.AreaSec:AddButton({ Name = "Teleport To Best Area Now", Callback = function()
+    task.spawn(function()
+        local best = bestArea()
+        if best and teleportToArea(best) then V.bestAreaLast = best.name V.bestAreaAt = os.clock() state.areaNote = "teleported to " .. best.name end
+    end)
+end })
+UI.lblBestArea = UI.AreaSec:AddLabel("Best area: -")
 UI.lblAreaNote = UI.AreaSec:AddLabel("Areas: -")
 UI.UpSec = section(UI.ProgTab, "Upgrades")
 UI.UpSec:AddToggle({ Name = "Auto Buy Selected Upgrades", Default = false, Flag = "px_autoUpgrades", Callback = function(v) F.autoUpgrades = v end })
@@ -1924,6 +2017,10 @@ loop("ui", 1, function()
         setText(UI.lblArea, "Next area: everything here is unlocked")
     end
     setText(UI.lblAreaNote, withNote(string.format("Areas: %d bought, %d teleports", state.areasBought, state.teleportsBought), state.areaNote))
+    do
+        local best = bestArea()
+        setText(UI.lblBestArea, best and string.format("Best area: %s (x%s coins)%s", best.name, tostring(best.mult), F.autoBestArea and (V.bestAreaLast == best.name and " - you are set" or " - teleporting") or "") or "Best area: -")
+    end
     setText(UI.lblProgress, withNote(string.format("Progression: %d upgrades, %d boosts", state.upgradesBought, state.boostsUsed), state.progressNote))
     setText(UI.lblWebhook, withNote(string.format("Webhook: %s, %d sent", F.webhookEnabled and "on" or "off", state.webhooksSent), state.webhookNote))
 end)
@@ -1952,7 +2049,7 @@ genv.VyPSXClassic = {
     State = state,
     Features = F,
     Vars = V,
-    Debug = { pickCoin = pickCoin, giantTarget = giantTarget, joinCoin = joinCoin, farmTick = farmTick, bestEgg = bestEgg, selectedEgg = selectedEgg, eggItems = eggItems, eggCost = eggCost, eggTick = eggTick, deleteTick = deleteTick, nextGate = nextGate, areaTick = areaTick, nextTeleport = nextTeleport, teleportTick = teleportTick, nextUpgrade = nextUpgrade, upgradeTick = upgradeTick, boostTick = boostTick, convertTick = convertTick, fuseTick = fuseTick, enchantTick = enchantTick, equipTick = equipTick, groupPets = groupPets, rankState = rankState, rankTick = rankTick, vipTick = vipTick, returnToPS99 = returnToPS99, currency = currency, getSave = getSave, petUids = petUids, netInvoke = netInvoke, netFire = netFire, remoteFunction = remoteFunction, remoteEvent = remoteEvent, orbTick = orbTick, sweepOrbs = sweepOrbs, lootTick = lootTick, osTime = osTime, padOf = padOf, webhookTick = webhookTick, sendTestWebhook = sendTestWebhook, sendPetWebhook = sendPetWebhook, petDisplayName = petDisplayName, webhookPost = webhookPost, petIconUrl = petIconUrl },
+    Debug = { pickCoin = pickCoin, giantTarget = giantTarget, joinCoin = joinCoin, farmTick = farmTick, bestEgg = bestEgg, selectedEgg = selectedEgg, eggItems = eggItems, eggCost = eggCost, eggTick = eggTick, deleteTick = deleteTick, nextGate = nextGate, areaTick = areaTick, bestArea = bestArea, scanAreas = scanAreas, teleportToArea = teleportToArea, bestAreaTick = bestAreaTick, nextTeleport = nextTeleport, teleportTick = teleportTick, nextUpgrade = nextUpgrade, upgradeTick = upgradeTick, boostTick = boostTick, convertTick = convertTick, fuseTick = fuseTick, enchantTick = enchantTick, equipTick = equipTick, groupPets = groupPets, rankState = rankState, rankTick = rankTick, vipTick = vipTick, returnToPS99 = returnToPS99, currency = currency, getSave = getSave, petUids = petUids, netInvoke = netInvoke, netFire = netFire, remoteFunction = remoteFunction, remoteEvent = remoteEvent, orbTick = orbTick, sweepOrbs = sweepOrbs, lootTick = lootTick, osTime = osTime, padOf = padOf, webhookTick = webhookTick, sendTestWebhook = sendTestWebhook, sendPetWebhook = sendPetWebhook, petDisplayName = petDisplayName, webhookPost = webhookPost, petIconUrl = petIconUrl },
 }
 
 pcall(function()
